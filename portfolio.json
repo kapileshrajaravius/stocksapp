@@ -1,0 +1,18 @@
+{
+    "TCS.NS": {
+        "shares": 1.0,
+        "buy_price": 4473.9
+    },
+    "TCS.BO": {
+        "shares": 1.0,
+        "buy_price": 4473.9
+    },
+    "^XDN": {
+        "shares": 100.0,
+        "buy_price": 47.0
+    },
+    "TSM": {
+        "shares": 100.0,
+        "buy_price": 47.0
+    }
+}

@@ -1,0 +1,71 @@
+{
+    "2026-03-17 17:09:45": [
+        {
+            "Stock": "TCS.NS",
+            "Units": 1.0,
+            "Market Price": "\u20b92,391.70",
+            "Return": "-46.54%",
+            "Action": "ACCUMULATE / BUY"
+        },
+        {
+            "Stock": "TCS.BO",
+            "Units": 1.0,
+            "Market Price": "\u20b92,391.75",
+            "Return": "-46.54%",
+            "Action": "ACCUMULATE / BUY"
+        }
+    ],
+    "2026-03-17 17:14:07": [
+        {
+            "Stock": "TCS.NS",
+            "Units": 1.0,
+            "Market Price": "\u20b92,391.70",
+            "Return": "-46.54%",
+            "Action": "ACCUMULATE / BUY"
+        },
+        {
+            "Stock": "TCS.BO",
+            "Units": 1.0,
+            "Market Price": "\u20b92,391.75",
+            "Return": "-46.54%",
+            "Action": "ACCUMULATE / BUY"
+        },
+        {
+            "Stock": "^XDN",
+            "Units": 100.0,
+            "Market Price": "$62.89",
+            "Return": "33.81%",
+            "Action": "LIQUIDATE / SELL"
+        }
+    ],
+    "2026-03-17 17:14:40": [
+        {
+            "Stock": "TCS.NS",
+            "Units": 1.0,
+            "Market Price": "\u20b92,391.70",
+            "Return": "-46.54%",
+            "Action": "ACCUMULATE / BUY"
+        },
+        {
+            "Stock": "TCS.BO",
+            "Units": 1.0,
+            "Market Price": "\u20b92,391.75",
+            "Return": "-46.54%",
+            "Action": "ACCUMULATE / BUY"
+        },
+        {
+            "Stock": "^XDN",
+            "Units": 100.0,
+            "Market Price": "$62.89",
+            "Return": "33.81%",
+            "Action": "LIQUIDATE / SELL"
+        },
+        {
+            "Stock": "TSM",
+            "Units": 100.0,
+            "Market Price": "$345.98",
+            "Return": "636.13%",
+            "Action": "LIQUIDATE / SELL"
+        }
+    ]
+}
