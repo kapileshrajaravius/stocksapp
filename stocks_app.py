@@ -4,43 +4,49 @@ import yfinance as yf
 import json
 import os
 from datetime import datetime
+from sklearn.ensemble import RandomForestClassifier
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="Market Intelligence Systems", layout="wide")
+st.set_page_config(page_title="AI Market Intelligence", layout="wide")
 
-# PROFESSIONAL CSS: Centered Content, Large Buttons, Dark Headers
+# CSS for large buttons and dark headers
 st.markdown("""
     <style>
     .main { max-width: 1000px; margin: 0 auto; }
-    thead tr th { background-color: #1e2630 !important; color: white !important; font-weight: bold !important; }
-    
-    .stButton>button { 
-        border-radius: 4px; 
-        height: 3.5em; 
-        font-weight: bold;
-        background-color: #004a99; 
-        color: white; 
-        border: 1px solid #003366;
-    }
-    .stButton>button:hover { background-color: #005bc1; border: 1px solid #004a99; }
+    thead tr th { background-color: #1e2630 !important; color: white !important; }
+    .stButton>button { border-radius: 4px; height: 3.5em; font-weight: bold; background-color: #004a99; color: white; }
     </style>
     """, unsafe_allow_html=True)
 
 DB_FILE = 'portfolio.json'
 HISTORY_FILE = 'history.json'
 
-# --- CURRENCY MAPPING ---
-CURRENCY_SYMBOLS = {
-    'USD': '$', 'INR': '₹', 'GBP': '£', 'EUR': '€', 'JPY': '¥', 
-    'CAD': 'C$', 'AUD': 'A$', 'CNY': '¥', 'HKD': 'HK$'
-}
-
-def get_currency_symbol(ticker_obj):
+# --- AI PREDICTION ENGINE ---
+def get_ai_advice(ticker):
     try:
-        code = ticker_obj.history_metadata.get('currency', 'USD')
-        return CURRENCY_SYMBOLS.get(code, f"{code} ")
+        data = yf.download(ticker, period="1y", interval="1d", progress=False)
+        if len(data) < 50: return "Insufficient Data", "0%"
+        
+        # Prepare Data
+        data['Target'] = (data['Close'].shift(-1) > data['Close']).astype(int)
+        data['MA10'] = data['Close'].rolling(10).mean()
+        data['MA50'] = data['Close'].rolling(50).mean()
+        data = data.dropna()
+
+        # Simple Random Forest
+        X = data[['MA10', 'MA50']]
+        y = data['Target']
+        model = RandomForestClassifier(n_estimators=50)
+        model.fit(X[:-1], y[:-1])
+
+        # Prediction for tomorrow
+        pred = model.predict(X.tail(1))[0]
+        prob = model.predict_proba(X.tail(1))[0][pred]
+        
+        advice = "🚀 BUY / UP" if pred == 1 else "⚠️ SELL / DOWN"
+        return advice, f"{prob:.0%}"
     except:
-        return "$"
+        return "Analysis Failed", "0%"
 
 # --- DATA HELPERS ---
 def load_json(file):
@@ -53,123 +59,87 @@ def load_json(file):
 def save_json(file, data):
     with open(file, 'w') as f: json.dump(data, f, indent=4)
 
-def get_suggestion(query):
-    try:
-        search = yf.Search(query, max_results=1).quotes
-        if search: return search[0]['symbol']
-    except: return None
-    return None
-
 # --- APP TABS ---
-tab1, tab2 = st.tabs(["Current Portfolio", "Analysis History"])
+tab1, tab2 = st.tabs(["Active Portfolio", "Analysis History"])
 
 with tab1:
     st.title("Market Intelligence Portal")
     
-    # UPDATED BLUE WARNING BOX
     st.info("""
-    **Market Entry Tips:**
-    * For international stocks, try **stock.NS** (NSE) or **stock.BO** (BSE).
-    * If those do not work, try entering just the **stock** ticker by itself.
-    * For indices like the S&P 500, add a **^** in front (e.g., **^GSPC**).
+    **Tips:** International stocks use **.NS** or **.BO**. 
+    For indices (S&P 500), use **^GSPC**.
     """)
     
-    st.subheader("Stock Registration")
+    # 1. INPUT AREA
+    st.subheader("Add New Stock")
     col1, col2, col3 = st.columns(3)
-    with col1: stock_in = st.text_input("Stock Ticker", placeholder="AAPL, TCS.NS, ^GSPC").upper()
-    with col2: shares_in = st.number_input("Stock Units", min_value=0.0)
-    with col3: price_in = st.number_input("Cost Basis", min_value=0.0)
+    with col1: stock_in = st.text_input("Stock Ticker", key="ticker_input").upper()
+    with col2: shares_in = st.number_input("Units", min_value=0.0, key="unit_input")
+    with col3: price_in = st.number_input("Cost Basis", min_value=0.0, key="price_input")
 
     if st.button("Register Stock"):
         if stock_in:
-            ticker_obj = yf.Ticker(stock_in)
-            try:
-                check = ticker_obj.history(period="1d")
-                if check.empty:
-                    suggestion = get_suggestion(stock_in)
-                    # UPDATED ERROR MESSAGE
-                    st.error(f"something is wrong with the ticker {stock_in}")
-                    if suggestion: st.info(f"System Suggestion: Did you mean {suggestion}?")
-                else:
-                    port = load_json(DB_FILE)
-                    port[stock_in] = {"shares": shares_in, "buy_price": price_in}
-                    save_json(DB_FILE, port)
-                    st.success(f"Stock {stock_in} Registered.")
-                    st.rerun()
-            except:
-                st.error(f"something is wrong with the ticker {stock_in}")
+            t_obj = yf.Ticker(stock_in)
+            if t_obj.history(period="1d").empty:
+                st.error(f"Ticker '{stock_in}' not found. Check spelling or suffix.")
+            else:
+                port = load_json(DB_FILE)
+                port[stock_in] = {"shares": shares_in, "buy_price": price_in}
+                save_json(DB_FILE, port)
+                st.success(f"Added {stock_in}")
+                st.rerun()
 
     st.divider()
 
-    # 2. EDITABLE PORTFOLIO
-    portfolio_data = load_json(DB_FILE)
-    if portfolio_data:
-        st.subheader("Active Holdings Management")
-        df_display = pd.DataFrame.from_dict(portfolio_data, orient='index').reset_index()
-        df_display.columns = ["Stock", "Units", "Cost Basis"]
+    # 2. PORTFOLIO MANAGEMENT
+    portfolio = load_json(DB_FILE)
+    if portfolio:
+        st.subheader("Current Holdings")
+        df_p = pd.DataFrame.from_dict(portfolio, orient='index').reset_index()
+        df_p.columns = ["Stock", "Units", "Cost"]
         
-        edited_df = st.data_editor(
-            df_display, 
-            num_rows="dynamic", 
-            use_container_width=True, 
-            hide_index=True,
-            key="portfolio_editor"
-        )
+        edited = st.data_editor(df_p, num_rows="dynamic", use_container_width=True, hide_index=True)
         
-        if st.button("Save Changes to Portfolio"):
-            new_port = {}
-            for _, row in edited_df.iterrows():
-                if pd.notnull(row['Stock']):
-                    new_port[row['Stock']] = {"shares": row['Units'], "buy_price": row['Cost Basis']}
+        if st.button("Save Changes"):
+            new_port = {row['Stock']: {"shares": row['Units'], "buy_price": row['Cost']} 
+                        for _, row in edited.iterrows() if pd.notnull(row['Stock'])}
             save_json(DB_FILE, new_port)
             st.rerun()
 
         st.divider()
 
-        # 3. ANALYSIS ENGINE
-        if st.button('Run Market Evaluation'):
+        # 3. AI EVALUATION
+        if st.button('Execute AI Market Analysis'):
             results = []
-            with st.spinner('Synchronizing with Global Exchanges...'):
-                for symbol, info in portfolio_data.items():
-                    try:
-                        ticker_obj = yf.Ticker(symbol)
-                        price = ticker_obj.history(period="1d")['Close'].iloc[-1]
-                        sym = get_currency_symbol(ticker_obj)
-                        gain = ((price - info['buy_price']) / info['buy_price']) * 100 if info['buy_price'] > 0 else 0
-                        
-                        advice = "HOLD"
-                        if gain > 15: advice = "LIQUIDATE / SELL"
-                        elif gain < -10: advice = "ACCUMULATE / BUY"
-                        
-                        results.append({
-                            "Stock": symbol, 
-                            "Units": info['shares'], 
-                            "Market Price": f"{sym}{price:,.2f}", 
-                            "Return": f"{gain:.2f}%", 
-                            "Action": advice
-                        })
-                    except: st.error(f"Data link failed for {symbol}")
-
+            with st.spinner('AI Brain is calculating trends...'):
+                for s, info in portfolio.items():
+                    price = yf.Ticker(s).history(period="1d")['Close'].iloc[-1]
+                    gain = ((price - info['buy_price']) / info['buy_price']) * 100
+                    ai_pred, conf = get_ai_advice(s)
+                    
+                    results.append({
+                        "Stock": s, "Price": f"${price:,.2f}", 
+                        "Gain %": f"{gain:.2f}%", "AI Prediction": ai_pred, "Confidence": conf
+                    })
+            
             if results:
-                res_df = pd.DataFrame(results)
-                st.subheader("Performance Analysis")
-                st.table(res_df)
+                st.subheader("AI Recommendations")
+                st.table(pd.DataFrame(results))
                 
+                # Save to History
                 history = load_json(HISTORY_FILE)
-                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                history[timestamp] = results
+                history[datetime.now().strftime("%Y-%m-%d %H:%M")] = results
                 save_json(HISTORY_FILE, history)
-                st.toast("Analysis archived in History.")
 
 with tab2:
-    st.title("Analysis Archive")
-    history_logs = load_json(HISTORY_FILE)
-    if not history_logs:
-        st.info("No historical logs found.")
+    st.title("Saved Analysis History")
+    hist = load_json(HISTORY_FILE)
+    if not hist:
+        st.write("No history saved yet.")
     else:
-        for ts in reversed(list(history_logs.keys())):
+        for ts in reversed(list(hist.keys())):
             with st.expander(f"Report: {ts}"):
-                st.table(pd.DataFrame(history_logs[ts]))
+                st.table(pd.DataFrame(hist[ts]))
         
         if st.button("Delete All History?"):
             save_json(HISTORY_FILE, {})
