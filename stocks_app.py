@@ -11,9 +11,9 @@ from sklearn.ensemble import RandomForestClassifier
 if 'session_id' not in st.session_state:
     st.session_state.session_id = str(uuid.uuid4())
 
-st.set_page_config(page_title="AI Investment Strategist", layout="wide")
+st.set_page_config(page_title="Market Intelligence Portal", layout="wide")
 
-# Professional Styling
+# Professional CSS
 st.markdown("""
     <style>
     thead tr th { background-color: #1e2630 !important; color: white !important; }
@@ -26,13 +26,11 @@ DB_FILE = 'portfolio.json'
 LOG_FILE = 'task_log.json'
 
 # --- AI CORE ENGINE ---
-def get_ai_signal(ticker):
+def get_ai_prediction(ticker):
     try:
-        # AI looks at 1 year of history to find patterns
         data = yf.download(ticker, period="1y", interval="1d", progress=False)
-        if len(data) < 40: return "NEUTRAL", 0.5
+        if len(data) < 40: return "NEUTRAL"
         
-        # Technical Indicators the AI studies
         data['MA10'] = data['Close'].rolling(10).mean()
         data['MA50'] = data['Close'].rolling(50).mean()
         data['Target'] = (data['Close'].shift(-1) > data['Close']).astype(int)
@@ -41,14 +39,12 @@ def get_ai_signal(ticker):
         X = data[['MA10', 'MA50']]
         y = data['Target']
         
-        # Training the Random Forest model
         model = RandomForestClassifier(n_estimators=50).fit(X[:-1], y[:-1])
         pred = model.predict(X.tail(1))[0]
-        prob = model.predict_proba(X.tail(1))[0][pred]
         
-        return ("BULLISH" if pred == 1 else "BEARISH"), prob
+        return "UP" if pred == 1 else "DOWN"
     except: 
-        return "ERROR", 0
+        return "ERROR"
 
 def load_data(file):
     if os.path.exists(file):
@@ -60,126 +56,118 @@ def load_data(file):
 def save_data(file, data):
     with open(file, 'w') as f: json.dump(data, f, indent=4)
 
-# --- TABBED NAVIGATION ---
-tab1, tab2, tab3, tab4 = st.tabs([
-    "📂 Portfolio Management", 
-    "🧠 AI Strategy & Actions", 
-    "🌍 Market Discovery", 
-    "📜 History Logs"
-])
+# --- DASHBOARD START ---
+st.title("Market Intelligence Portal")
+st.info("Note: For international stocks, please use the correct suffix (e.g., stock.NS for NSE or stock.BO for BSE).")
 
-# --- TAB 1: REGISTRATION ---
-with tab1:
-    st.header("Asset Registration")
-    st.info("Tips: Use .NS for India (e.g., RELIANCE.NS) or ^ for Indices (e.g., ^GSPC).")
-    
-    col1, col2, col3 = st.columns(3)
-    # Using dynamic keys to force-clear inputs after adding
-    with col1: t_in = st.text_input("Ticker Symbol", key=f"t_{st.session_state.session_id}").upper()
-    with col2: s_in = st.number_input("Shares Owned", min_value=0.0, step=1.0, key=f"s_{st.session_state.session_id}")
-    with col3: p_in = st.number_input("Purchase Price", min_value=0.0, step=0.01, key=f"p_{st.session_state.session_id}")
-    
-    if st.button("Add to Portfolio"):
-        if t_in:
-            check = yf.Ticker(t_in).history(period="1d")
-            if check.empty:
-                st.error(f"something is wrong with the ticker {t_in}")
-            else:
-                port = load_data(DB_FILE)
-                port[t_in] = {"shares": s_in, "buy_price": p_in}
-                save_data(DB_FILE, port)
-                # Reset session ID to wipe input boxes
-                st.session_state.session_id = str(uuid.uuid4())
-                st.success(f"Registered {t_in}")
-                st.rerun()
-    
-    st.divider()
-    portfolio = load_data(DB_FILE)
-    if portfolio:
-        st.subheader("Current Holdings Management")
-        df_p = pd.DataFrame.from_dict(portfolio, orient='index').reset_index()
-        df_p.columns = ["Stock", "Units", "Buy Price"]
-        edited = st.data_editor(df_p, num_rows="dynamic", use_container_width=True, hide_index=True)
-        if st.button("Save Changes / Delete Asset"):
-            new_port = {row['Stock']: {"shares": row['Units'], "buy_price": row['Buy Price']} 
-                        for _, row in edited.iterrows() if pd.notnull(row['Stock'])}
-            save_data(DB_FILE, new_port)
+# 1. STOCK REGISTRATION
+st.subheader("Stock Registration")
+col1, col2, col3 = st.columns(3)
+with col1: t_in = st.text_input("Stock Ticker", key=f"t_{st.session_state.session_id}").upper()
+with col2: s_in = st.number_input("Stock Units", min_value=0.0, step=1.0, key=f"s_{st.session_state.session_id}")
+with col3: p_in = st.number_input("Cost Basis", min_value=0.0, step=0.01, key=f"p_{st.session_state.session_id}")
+
+if st.button("Register Stock"):
+    if t_in:
+        check = yf.Ticker(t_in).history(period="1d")
+        if check.empty:
+            st.error(f"something is wrong with the ticker {t_in}")
+        else:
+            port = load_data(DB_FILE)
+            port[t_in] = {"shares": s_in, "buy_price": p_in}
+            save_data(DB_FILE, port)
+            st.session_state.session_id = str(uuid.uuid4())
+            st.success(f"Stock {t_in} Registered.")
             st.rerun()
 
-# --- TAB 2: AI STRATEGY ---
-with tab2:
-    st.header("AI Market Strategy")
-    if st.button("Generate Current Strategy Tables"):
-        portfolio = load_data(DB_FILE)
-        if not portfolio:
-            st.warning("Please add stocks in the Portfolio tab first.")
-        else:
-            with st.spinner("Analyzing market patterns..."):
-                buy_more, hold, sell = [], [], []
-                for s, info in portfolio.items():
-                    price_data = yf.Ticker(s).history(period="1d")
-                    if price_data.empty: continue
-                    
-                    price = price_data['Close'].iloc[-1]
-                    gain = ((price - info['buy_price']) / info['buy_price']) * 100
-                    sig, conf = get_ai_signal(s)
-                    
-                    row = {"Stock": s, "Live Price": f"${price:,.2f}", "Profit/Loss": f"{gain:.2f}%", "AI Confidence": f"{conf:.0%}"}
-                    
-                    # Logic: Sell if Bearish or high profit. Buy more if Bullish and low profit.
-                    if sig == "BEARISH" or gain > 30: sell.append(row)
-                    elif sig == "BULLISH" and gain < 10: buy_more.append(row)
-                    else: hold.append(row)
+st.divider()
 
-                # Each table is displayed only if it has data to avoid DeltaGenerator errors
-                st.subheader("🚀 Accumulate (Buy More)")
-                if buy_more: st.table(pd.DataFrame(buy_more))
-                else: st.write("No accumulation signals.")
-                
-                st.subheader("💎 Hold (Maintain Position)")
-                if hold: st.table(pd.DataFrame(hold))
-                else: st.write("No hold signals.")
-                
-                st.subheader("⚠️ Liquidate (Recommended Sell)")
-                if sell: st.table(pd.DataFrame(sell))
-                else: st.write("No sell signals.")
-                
-                st.divider()
-                if st.button("Mark Recommended Actions as Completed"):
-                    logs = load_data(LOG_FILE)
-                    logs[datetime.now().strftime("%Y-%m-%d %H:%M")] = "User confirmed execution of strategy."
-                    save_data(LOG_FILE, logs)
-                    st.success("Action logged in History.")
-
-# --- TAB 3: DISCOVERY ---
-with tab3:
-    st.header("New Opportunities")
-    st.write("Strong 'BUY' signals for stocks not currently in your portfolio.")
-    watch_list = ["NVDA", "AAPL", "TCS.NS", "RELIANCE.NS", "TSLA", "MSFT", "GOOGL", "BTC-USD"]
-    discoveries = []
-    portfolio = load_data(DB_FILE)
+# 2. CURRENT HOLDINGS
+portfolio = load_data(DB_FILE)
+if portfolio:
+    st.subheader("Current Holdings")
+    df_p = pd.DataFrame.from_dict(portfolio, orient='index').reset_index()
+    df_p.columns = ["Stock", "Units", "Cost"]
+    edited = st.data_editor(df_p, num_rows="dynamic", use_container_width=True, hide_index=True)
     
-    if st.button("Scan Global Market"):
-        with st.spinner("Scanning..."):
-            for s in watch_list:
-                if s not in portfolio:
-                    sig, conf = get_ai_signal(s)
-                    if sig == "BULLISH" and conf > 0.65:
-                        discoveries.append({"Stock": s, "AI Signal": "BULLISH", "Confidence": f"{conf:.0%}"})
-        
-        if discoveries: st.table(pd.DataFrame(discoveries))
-        else: st.write("No high-confidence new buys found right now.")
-
-# --- TAB 4: LOGS ---
-with tab4:
-    st.header("Activity History")
-    logs = load_data(LOG_FILE)
-    if logs:
-        for ts, msg in reversed(list(logs.items())):
-            st.write(f"✅ **{ts}**: {msg}")
-    else:
-        st.write("No actions logged yet.")
-    
-    if st.button("Clear History"):
-        save_data(LOG_FILE, {})
+    if st.button("Save Changes"):
+        new_port = {row['Stock']: {"shares": row['Units'], "buy_price": row['Cost']} 
+                    for _, row in edited.iterrows() if pd.notnull(row['Stock'])}
+        save_data(DB_FILE, new_port)
         st.rerun()
+
+    st.divider()
+
+    # 3. AI ANALYSIS & STRATEGY
+    if st.button("Generate Market Analysis"):
+        buy_more, hold, sell = [], [], []
+        
+        for s, info in portfolio.items():
+            price_data = yf.Ticker(s).history(period="1d")
+            if price_data.empty: continue
+            
+            price = price_data['Close'].iloc[-1]
+            gain = ((price - info['buy_price']) / info['buy_price']) * 100
+            prediction = get_ai_prediction(s)
+            
+            row = {"Stock": s, "Price": f"${price:,.2f}", "Gain": f"{gain:.2f}%"}
+            
+            if prediction == "DOWN" or gain > 30: 
+                sell.append(row)
+            elif prediction == "UP" and gain < 10: 
+                buy_more.append(row)
+            else: 
+                hold.append(row)
+
+        st.subheader("Accumulate (Buy More)")
+        if buy_more: st.table(pd.DataFrame(buy_more))
+        else: st.write("No accumulation signals.")
+        
+        st.subheader("Hold (Maintain Position)")
+        if hold: st.table(pd.DataFrame(hold))
+        else: st.write("No hold signals.")
+        
+        st.subheader("Liquidate (Recommended Sell)")
+        if sell: st.table(pd.DataFrame(sell))
+        else: st.write("No sell signals.")
+        
+        st.divider()
+        if st.button("Confirm Actions Completed"):
+            logs = load_data(LOG_FILE)
+            logs[datetime.now().strftime("%Y-%m-%d %H:%M")] = "User completed strategy actions."
+            save_data(LOG_FILE, logs)
+            st.success("Action logged.")
+
+st.divider()
+
+# 4. DISCOVERY: TOP 10 RECOMMENDATIONS
+st.subheader("Top 10 Investment Recommendations")
+st.write("Best current opportunities for new investment.")
+# Curated list of high-potential stocks for AI scanning
+top_picks = ["NVDA", "AAPL", "MSFT", "GOOGL", "TSLA", "AMZN", "META", "TCS.NS", "RELIANCE.NS", "INFY.NS"]
+recommendations = []
+
+if st.button("Scan Top 10 Market Opportunities"):
+    with st.spinner("Analyzing market data..."):
+        for s in top_picks:
+            if s not in portfolio:
+                prediction = get_ai_prediction(s)
+                if prediction == "UP":
+                    price = yf.Ticker(s).history(period="1d")['Close'].iloc[-1]
+                    recommendations.append({"Stock": s, "Current Price": f"${price:,.2f}"})
+    
+    if recommendations:
+        st.table(pd.DataFrame(recommendations).head(10))
+    else:
+        st.write("No high-confidence new buys found at this time.")
+
+st.divider()
+
+# 5. HISTORY LOGS
+st.subheader("Action History")
+logs = load_data(LOG_FILE)
+if logs:
+    for ts, msg in reversed(list(logs.items())):
+        st.write(f"{ts}: {msg}")
+else:
+    st.write("No actions logged yet.")
