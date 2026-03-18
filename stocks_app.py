@@ -10,7 +10,6 @@ from sklearn.ensemble import RandomForestClassifier
 # --- INITIALIZATION ---
 st.set_page_config(page_title="Market Intelligence Portal", layout="wide")
 
-# Persistent Data Files
 DB_FILE = 'portfolio.json'
 LOG_FILE = 'task_log.json'
 
@@ -26,12 +25,15 @@ def save_data(file, data):
     with open(file, 'w') as f: json.dump(data, f, indent=4)
 
 def get_currency_sign(ticker):
-    return "₹" if ticker.endswith('.NS') or ticker.endswith('.BO') else "$"
+    """Detects correct currency sign for US or India stocks"""
+    if ticker.endswith('.NS') or ticker.endswith('.BO'):
+        return "₹"
+    return "$"
 
 def get_ai_prediction_data(ticker):
+    """Calculates predictions with rate-limit protection"""
     try:
-        # Rate limit protection
-        time.sleep(0.5) 
+        time.sleep(0.5) # Prevents YFRateLimitError (image_b42f7c.png)
         data = yf.download(ticker, period="1y", interval="1d", progress=False)
         if len(data) < 40: return "NEUTRAL", 0.0
         
@@ -55,7 +57,14 @@ def get_ai_prediction_data(ticker):
 
 # --- SIDEBAR NAVIGATION ---
 st.sidebar.title("Navigation")
-page = st.sidebar.radio("Go to:", ["Stock Registration", "My Portfolio", "AI Market Analysis", "Top 10 Picks", "Activity Logs"])
+# Moving everything to its own page as requested
+page = st.sidebar.radio("Go to:", [
+    "Stock Registration", 
+    "My Portfolio", 
+    "AI Market Analysis", 
+    "Top 10 Picks", 
+    "Activity Logs"
+])
 
 st.sidebar.divider()
 st.sidebar.subheader("System Tips")
@@ -74,7 +83,7 @@ if page == "Stock Registration":
             with st.spinner("Verifying ticker..."):
                 check = yf.Ticker(t_in).history(period="1d")
                 if check.empty:
-                    st.error(f"Ticker {t_in} not found. Check the suffix.")
+                    st.error(f"Ticker {t_in} not found. Did you forget the .NS or .BO suffix?")
                 else:
                     port = load_data(DB_FILE)
                     port[t_in] = {"shares": s_in, "buy_price": p_in}
@@ -88,6 +97,7 @@ elif page == "My Portfolio":
     if portfolio:
         df_p = pd.DataFrame.from_dict(portfolio, orient='index').reset_index()
         df_p.columns = ["Stock", "Units", "Cost"]
+        # Allow editing or deleting stocks
         edited = st.data_editor(df_p, num_rows="dynamic", use_container_width=True, hide_index=True)
         if st.button("Update Portfolio"):
             new_port = {row['Stock']: {"shares": row['Units'], "buy_price": row['Cost']} 
@@ -95,7 +105,7 @@ elif page == "My Portfolio":
             save_data(DB_FILE, new_port)
             st.rerun()
     else:
-        st.warning("No stocks registered yet.")
+        st.warning("No stocks registered. Go to the Registration page first.")
 
 # --- PAGE 3: ANALYSIS ---
 elif page == "AI Market Analysis":
@@ -105,7 +115,7 @@ elif page == "AI Market Analysis":
         st.warning("Register stocks first to see analysis.")
     elif st.button("Generate Strategy Tables"):
         buy_more, hold, sell = [], [], []
-        with st.spinner("Analyzing market patterns..."):
+        with st.spinner("AI is analyzing your stocks..."):
             for s, info in portfolio.items():
                 price_data = yf.Ticker(s).history(period="1d")
                 if price_data.empty: continue
@@ -115,6 +125,7 @@ elif page == "AI Market Analysis":
                 gain_pct = ((price - info['buy_price']) / info['buy_price']) * 100
                 prediction, pred_pct = get_ai_prediction_data(s)
                 
+                # Money gain/loss logic
                 money_change = (price * info['shares']) * pred_pct
                 
                 row = {
@@ -127,27 +138,39 @@ elif page == "AI Market Analysis":
                 elif prediction == "UP" and gain_pct < 10: buy_more.append(row)
                 else: hold.append(row)
 
-        st.subheader("Accumulate (Buy)")
-        st.table(pd.DataFrame(buy_more)) if buy_more else st.write("None.")
-        st.subheader("Hold (Keep)")
-        st.table(pd.DataFrame(hold)) if hold else st.write("None.")
-        st.subheader("Liquidate (Sell)")
-        st.table(pd.DataFrame(sell)) if sell else st.write("None.")
+        st.subheader("Accumulate (Buy More)")
+        if buy_more: st.table(pd.DataFrame(buy_more))
+        else: st.write("No accumulation signals.")
+
+        st.subheader("Hold (Maintain Position)")
+        if hold: st.table(pd.DataFrame(hold))
+        else: st.write("No hold signals.")
+
+        st.subheader("Liquidate (Recommended Sell)")
+        if sell: st.table(pd.DataFrame(sell))
+        else: st.write("No sell signals.")
 
 # --- PAGE 4: TOP 10 ---
 elif page == "Top 10 Picks":
     st.header("Top 10 Investment Opportunities")
+    # Pre-set list of major stocks to scan
     top_picks = ["NVDA", "AAPL", "MSFT", "GOOGL", "TSLA", "AMZN", "META", "TCS.NS", "RELIANCE.NS", "INFY.NS"]
     if st.button("Scan Global Market"):
         recs = []
-        with st.spinner("Scanning..."):
+        with st.spinner("Scanning for high-growth opportunities..."):
             for s in top_picks:
-                prediction, pred_pct = get_ai_prediction_data(s)
-                if prediction == "UP":
-                    cur = get_currency_sign(s)
-                    price = yf.Ticker(s).history(period="1d")['Close'].iloc[-1]
-                    recs.append({"Stock": s, "Price": f"{cur}{price:,.2f}", "Est. Growth": f"{pred_pct:+.2%}"})
-        st.table(pd.DataFrame(recs).head(10)) if recs else st.write("No strong buys found.")
+                if s not in load_data(DB_FILE):
+                    prediction, pred_pct = get_ai_prediction_data(s)
+                    if prediction == "UP":
+                        cur = get_currency_sign(s)
+                        price = yf.Ticker(s).history(period="1d")['Close'].iloc[-1]
+                        recs.append({
+                            "Stock": s, 
+                            "Price": f"{cur}{price:,.2f}", 
+                            "Est. 5-Day Growth": f"{pred_pct:+.2%}"
+                        })
+        if recs: st.table(pd.DataFrame(recs).head(10))
+        else: st.write("No strong buys found right now.")
 
 # --- PAGE 5: LOGS ---
 elif page == "Activity Logs":
