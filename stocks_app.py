@@ -13,14 +13,15 @@ st.markdown("""
     <style>
     thead tr th { background-color: #1e2630 !important; color: white !important; }
     .stButton>button { border-radius: 4px; height: 3em; background-color: #004a99; color: white; width: 100%; }
-    .success-text { color: #28a745; font-weight: bold; }
+    .main { max-width: 1100px; margin: 0 auto; }
     </style>
     """, unsafe_allow_html=True)
 
 DB_FILE = 'portfolio.json'
-COMPLETED_FILE = 'actions_completed.json'
+HIST_FILE = 'history.json'
+LOG_FILE = 'task_log.json'
 
-# --- AI CORE ---
+# --- AI CORE ENGINE ---
 def get_ai_signal(ticker):
     try:
         data = yf.download(ticker, period="1y", interval="1d", progress=False)
@@ -39,78 +40,113 @@ def get_ai_signal(ticker):
 
 def load_data(file):
     if os.path.exists(file):
-        with open(file, 'r') as f: return json.load(f)
+        try:
+            with open(file, 'r') as f: return json.load(f)
+        except: return {}
     return {}
 
 def save_data(file, data):
     with open(file, 'w') as f: json.dump(data, f, indent=4)
 
-# --- MAIN INTERFACE ---
-st.title("AI Investment Strategist")
+# --- TABBED NAVIGATION ---
+tab1, tab2, tab3, tab4 = st.tabs([
+    "📂 Portfolio Management", 
+    "🧠 AI Strategy & Actions", 
+    "🌍 Market Discovery", 
+    "📜 History Logs"
+])
 
-# 1. PORTFOLIO REGISTRATION
-with st.expander("Update Current Holdings"):
-    c1, c2, c3 = st.columns(3)
-    with c1: t_in = st.text_input("Stock Ticker").upper()
-    with c2: s_in = st.number_input("Units", min_value=0.0)
-    with c3: p_in = st.number_input("Buy Price", min_value=0.0)
-    if st.button("Add Stock"):
-        port = load_data(DB_FILE)
-        port[t_in] = {"shares": s_in, "buy_price": p_in}
-        save_data(DB_FILE, port)
-        st.rerun()
-
-st.divider()
-
-if st.button("Generate AI Market Strategy"):
-    portfolio = load_data(DB_FILE)
+# --- TAB 1: REGISTRATION ---
+with tab1:
+    st.header("Asset Registration")
+    col1, col2, col3 = st.columns(3)
+    with col1: t_in = st.text_input("Ticker Symbol", placeholder="e.g., AAPL or TCS.NS").upper()
+    with col2: s_in = st.number_input("Shares Owned", min_value=0.0, step=1.0)
+    with col3: p_in = st.number_input("Purchase Price (Unit Cost)", min_value=0.0, step=0.01)
     
-    # 2. DISCOVERY (Stocks to Buy - Not Owned)
-    st.subheader("1. Market Discovery: Recommended to Buy")
-    watch_list = ["NVDA", "TSLA", "AAPL", "MSFT", "RELIANCE.NS", "TCS.NS", "GOOGL"]
-    new_buys = []
+    if st.button("Add to Portfolio"):
+        if t_in:
+            if yf.Ticker(t_in).history(period="1d").empty:
+                st.error(f"something is wrong with the ticker {t_in}")
+            else:
+                port = load_data(DB_FILE)
+                port[t_in] = {"shares": s_in, "buy_price": p_in}
+                save_data(DB_FILE, port)
+                st.success(f"Registered {t_in}")
+                st.rerun()
+    
+    st.divider()
+    portfolio = load_data(DB_FILE)
+    if portfolio:
+        st.subheader("Current Holdings Management")
+        df_p = pd.DataFrame.from_dict(portfolio, orient='index').reset_index()
+        df_p.columns = ["Stock", "Units", "Buy Price"]
+        edited = st.data_editor(df_p, num_rows="dynamic", use_container_width=True, hide_index=True)
+        if st.button("Save Changes / Delete Asset"):
+            new_port = {row['Stock']: {"shares": row['Units'], "buy_price": row['Buy Price']} 
+                        for _, row in edited.iterrows() if pd.notnull(row['Stock'])}
+            save_data(DB_FILE, new_port)
+            st.rerun()
+
+# --- TAB 2: AI STRATEGY ---
+with tab2:
+    st.header("AI Market Strategy")
+    if st.button("Generate Current Strategy Tables"):
+        portfolio = load_data(DB_FILE)
+        if not portfolio:
+            st.warning("Please add stocks in the Portfolio tab first.")
+        else:
+            with st.spinner("Analyzing your portfolio..."):
+                buy_more, hold, sell = [], [], []
+                for s, info in portfolio.items():
+                    price = yf.Ticker(s).history(period="1d")['Close'].iloc[-1]
+                    gain = ((price - info['buy_price']) / info['buy_price']) * 100
+                    sig, conf = get_ai_signal(s)
+                    row = {"Stock": s, "Live Price": f"${price:,.2f}", "P/L %": f"{gain:.2f}%", "AI Confidence": f"{conf:.0%}"}
+                    
+                    if sig == "BEARISH" or gain > 30: sell.append(row)
+                    elif sig == "BULLISH" and gain < 10: buy_more.append(row)
+                    else: hold.append(row)
+
+                st.subheader("🚀 Accumulate (Buy More)")
+                st.table(pd.DataFrame(buy_more)) if buy_more else st.write("No accumulation signals.")
+                
+                st.subheader("💎 Hold (Maintain Position)")
+                st.table(pd.DataFrame(hold)) if hold else st.write("No hold signals.")
+                
+                st.subheader("⚠️ Liquidate (Recommended Sell)")
+                st.table(pd.DataFrame(sell)) if sell else st.write("No sell signals.")
+                
+                st.divider()
+                if st.button("I Have Completed These Actions"):
+                    logs = load_data(LOG_FILE)
+                    logs[datetime.now().strftime("%Y-%m-%d %H:%M")] = "User executed strategy actions."
+                    save_data(LOG_FILE, logs)
+                    st.success("Action logged successfully.")
+
+# --- TAB 3: DISCOVERY ---
+with tab3:
+    st.header("New Opportunities")
+    st.write("Strong 'BUY' signals for stocks not currently in your portfolio.")
+    watch_list = ["NVDA", "AAPL", "TCS.NS", "RELIANCE.NS", "TSLA", "MSFT", "GOOGL"]
+    discoveries = []
+    portfolio = load_data(DB_FILE)
     for s in watch_list:
         if s not in portfolio:
             sig, conf = get_ai_signal(s)
-            if sig == "BULLISH" and conf > 0.6:
-                new_buys.append({"Stock": s, "Signal": "STRONG BUY", "Confidence": f"{conf:.0%}"})
-    st.table(pd.DataFrame(new_buys) if new_buys else "No new high-confidence buys detected.")
+            if sig == "BULLISH" and conf > 0.65:
+                discoveries.append({"Stock": s, "Signal": "BULLISH", "Confidence": f"{conf:.0%}"})
+    st.table(pd.DataFrame(discoveries)) if discoveries else st.write("Scanning for new opportunities...")
 
-    if portfolio:
-        buy_more, hold, sell = [], [], []
-        
-        for s, info in portfolio.items():
-            curr_price = yf.Ticker(s).history(period="1d")['Close'].iloc[-1]
-            gain = ((curr_price - info['buy_price']) / info['buy_price']) * 100
-            sig, conf = get_ai_signal(s)
-            
-            row = {"Stock": s, "Current Price": f"${curr_price:,.2f}", "Profit/Loss": f"{gain:.1f}%"}
-            
-            if sig == "BEARISH" or gain > 25:
-                sell.append(row)
-            elif sig == "BULLISH" and gain < 5:
-                buy_more.append(row)
-            else:
-                hold.append(row)
-
-        # 3. BUY MORE TABLE
-        st.subheader("2. Accumulate: Buy More of These")
-        st.table(pd.DataFrame(buy_more) if buy_more else "No current accumulation signals.")
-
-        # 4. HOLD TABLE
-        st.subheader("3. Core Positions: Maintain & Hold")
-        st.table(pd.DataFrame(hold) if hold else "No hold positions.")
-
-        # 5. SELL TABLE
-        st.subheader("4. Liquidate: Recommended to Sell")
-        st.table(pd.DataFrame(sell) if sell else "No sell signals.")
-
-        st.divider()
-        
-        # 6. ACTION COMPLETED BUTTON
-        st.subheader("Task Management")
-        if st.button("Mark All Recommended Actions as Completed"):
-            done_log = load_data(COMPLETED_FILE)
-            done_log[datetime.now().strftime("%Y-%m-%d %H:%M")] = "Actions Executed"
-            save_data(COMPLETED_FILE, done_log)
-            st.success("Log Updated: Your dad's actions have been recorded in history.")
+# --- TAB 4: LOGS ---
+with tab4:
+    st.header("Task & Analysis History")
+    logs = load_data(LOG_FILE)
+    if logs:
+        st.subheader("Completed Actions")
+        for ts, msg in reversed(list(logs.items())):
+            st.write(f"✅ **{ts}**: {msg}")
+    
+    if st.button("Delete All Logs"):
+        save_data(LOG_FILE, {})
+        st.rerun()
