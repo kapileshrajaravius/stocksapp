@@ -25,11 +25,18 @@ st.markdown("""
 DB_FILE = 'portfolio.json'
 LOG_FILE = 'task_log.json'
 
-# --- AI CORE ENGINE ---
-def get_ai_prediction(ticker):
+# --- HELPERS ---
+def get_currency_sign(ticker):
+    """Detects correct currency sign based on ticker suffix"""
+    if ticker.endswith('.NS') or ticker.endswith('.BO'):
+        return "₹"
+    return "$"
+
+def get_ai_prediction_data(ticker):
+    """Calculates directional prediction and estimated growth percentage"""
     try:
         data = yf.download(ticker, period="1y", interval="1d", progress=False)
-        if len(data) < 40: return "NEUTRAL"
+        if len(data) < 40: return "NEUTRAL", 0.0
         
         data['MA10'] = data['Close'].rolling(10).mean()
         data['MA50'] = data['Close'].rolling(50).mean()
@@ -42,9 +49,13 @@ def get_ai_prediction(ticker):
         model = RandomForestClassifier(n_estimators=50).fit(X[:-1], y[:-1])
         pred = model.predict(X.tail(1))[0]
         
-        return "UP" if pred == 1 else "DOWN"
+        # Simple momentum-based predicted growth estimate
+        recent_growth = (data['Close'].iloc[-1] / data['Close'].iloc[-5]) - 1
+        predicted_pct = recent_growth if pred == 1 else -abs(recent_growth)
+        
+        return ("UP" if pred == 1 else "DOWN"), predicted_pct
     except: 
-        return "ERROR"
+        return "ERROR", 0.0
 
 def load_data(file):
     if os.path.exists(file):
@@ -58,7 +69,6 @@ def save_data(file, data):
 
 # --- DASHBOARD START ---
 st.title("Market Intelligence Portal")
-st.info("Note: For international stocks, please use the correct suffix (e.g., stock.NS for NSE or stock.BO for BSE).")
 
 # 1. STOCK REGISTRATION
 st.subheader("Stock Registration")
@@ -71,7 +81,7 @@ if st.button("Register Stock"):
     if t_in:
         check = yf.Ticker(t_in).history(period="1d")
         if check.empty:
-            st.error(f"something is wrong with the ticker {t_in}")
+            st.error(f"Something is wrong with the ticker {t_in}")
         else:
             port = load_data(DB_FILE)
             port[t_in] = {"shares": s_in, "buy_price": p_in}
@@ -106,18 +116,27 @@ if portfolio:
             price_data = yf.Ticker(s).history(period="1d")
             if price_data.empty: continue
             
+            cur = get_currency_sign(s)
             price = price_data['Close'].iloc[-1]
-            gain = ((price - info['buy_price']) / info['buy_price']) * 100
-            prediction = get_ai_prediction(s)
+            gain_pct = ((price - info['buy_price']) / info['buy_price']) * 100
             
-            row = {"Stock": s, "Price": f"${price:,.2f}", "Gain": f"{gain:.2f}%"}
+            prediction, pred_pct = get_ai_prediction_data(s)
             
-            if prediction == "DOWN" or gain > 30: 
-                sell.append(row)
-            elif prediction == "UP" and gain < 10: 
-                buy_more.append(row)
-            else: 
-                hold.append(row)
+            # Money-based prediction calculation
+            total_value = price * info['shares']
+            pred_money_change = total_value * pred_pct
+            
+            row = {
+                "Stock": s, 
+                "Price": f"{cur}{price:,.2f}", 
+                "Total Gain": f"{gain_pct:+.2f}%",
+                "Predicted Increase (%)": f"{pred_pct:+.2f}%",
+                "Predicted Gain (Cash)": f"{cur}{pred_money_change:,.2f}"
+            }
+            
+            if prediction == "DOWN" or gain_pct > 30: sell.append(row)
+            elif prediction == "UP" and gain_pct < 10: buy_more.append(row)
+            else: hold.append(row)
 
         st.subheader("Accumulate (Buy More)")
         if buy_more: st.table(pd.DataFrame(buy_more))
@@ -142,8 +161,6 @@ st.divider()
 
 # 4. DISCOVERY: TOP 10 RECOMMENDATIONS
 st.subheader("Top 10 Investment Recommendations")
-st.write("Best current opportunities for new investment.")
-# Curated list of high-potential stocks for AI scanning
 top_picks = ["NVDA", "AAPL", "MSFT", "GOOGL", "TSLA", "AMZN", "META", "TCS.NS", "RELIANCE.NS", "INFY.NS"]
 recommendations = []
 
@@ -151,10 +168,15 @@ if st.button("Scan Top 10 Market Opportunities"):
     with st.spinner("Analyzing market data..."):
         for s in top_picks:
             if s not in portfolio:
-                prediction = get_ai_prediction(s)
+                prediction, pred_pct = get_ai_prediction_data(s)
                 if prediction == "UP":
+                    cur = get_currency_sign(s)
                     price = yf.Ticker(s).history(period="1d")['Close'].iloc[-1]
-                    recommendations.append({"Stock": s, "Current Price": f"${price:,.2f}"})
+                    recommendations.append({
+                        "Stock": s, 
+                        "Current Price": f"{cur}{price:,.2f}",
+                        "Est. 5-Day Growth": f"{pred_pct:+.2f}%"
+                    })
     
     if recommendations:
         st.table(pd.DataFrame(recommendations).head(10))
