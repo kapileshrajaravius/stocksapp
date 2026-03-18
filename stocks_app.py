@@ -28,10 +28,14 @@ def get_currency_sign(ticker):
     return "₹" if ticker.endswith('.NS') or ticker.endswith('.BO') else "$"
 
 def get_ai_prediction_data(ticker):
-    """Calculates predictions with heavy rate-limit protection to fix b43689.png errors"""
+    """
+    Calculates predictions with strict rate-limit protection 
+    to fix YFRateLimitError (cite: 10.2).
+    """
     for attempt in range(3):
         try:
-            time.sleep(1.5) # Increased delay to prevent YFRateLimitError
+            # Mandatory pause to look like a human user
+            time.sleep(1.5) 
             data = yf.download(ticker, period="1y", interval="1d", progress=False)
             if len(data) < 40: return "NEUTRAL", 0.0
             
@@ -46,31 +50,37 @@ def get_ai_prediction_data(ticker):
             model = RandomForestClassifier(n_estimators=50).fit(X[:-1], y[:-1])
             pred = model.predict(X.tail(1))[0]
             
-            # Use volatility to estimate risk/reward potential
+            # Use 10-day volatility for growth estimation
             recent_growth = (data['Close'].iloc[-1] / data['Close'].iloc[-10]) - 1
             predicted_pct = recent_growth if pred == 1 else -abs(recent_growth)
             
             return ("UP" if pred == 1 else "DOWN"), float(predicted_pct)
         except Exception as e:
             if "Rate" in str(e):
-                time.sleep(5) # Long sleep if blocked
+                time.sleep(5) # Cooldown if Yahoo gets angry
                 continue
             return "ERROR", 0.0
     return "ERROR", 0.0
 
 # --- SIDEBAR NAVIGATION ---
 st.sidebar.title("Navigation")
-page = st.sidebar.radio("Go to:", ["Stock Registration", "My Portfolio", "AI Market Analysis", "New Opportunities", "Activity Logs"])
+page = st.sidebar.radio("Go to:", [
+    "Stock Registration", 
+    "My Portfolio", 
+    "AI Market Analysis", 
+    "New Opportunities", 
+    "Activity Logs"
+])
 
 st.sidebar.divider()
 st.sidebar.subheader("System Tips")
-st.sidebar.info("The AI now filters for positive growth before recommending a stock.")
+st.sidebar.info("AI now filters out stocks with negative predicted growth (cite: 10.3).")
 
 # --- PAGE: REGISTRATION ---
 if page == "Stock Registration":
     st.header("Stock Registration")
     col1, col2, col3 = st.columns(3)
-    with col1: t_in = st.text_input("Ticker Symbol").upper()
+    with col1: t_in = st.text_input("Ticker Symbol (e.g. AAPL or TCS.NS)").upper()
     with col2: s_in = st.number_input("Units Owned", min_value=0.0)
     with col3: p_in = st.number_input("Buy Price", min_value=0.0)
     
@@ -85,7 +95,7 @@ if page == "Stock Registration":
                         port[t_in] = {"shares": s_in, "buy_price": p_in}
                         save_data(DB_FILE, port)
                         st.success(f"Registered {t_in}")
-                except: st.error("Rate limit hit. Wait 1 minute and try again.")
+                except: st.error("Rate limit hit. Wait 30 seconds.")
 
 # --- PAGE: MY PORTFOLIO ---
 elif page == "My Portfolio":
@@ -95,10 +105,12 @@ elif page == "My Portfolio":
         df_p = pd.DataFrame.from_dict(portfolio, orient='index').reset_index()
         df_p.columns = ["Stock", "Units", "Cost"]
         edited = st.data_editor(df_p, num_rows="dynamic", use_container_width=True, hide_index=True)
-        if st.button("Save Updates"):
-            new_port = {row['Stock']: {"shares": row['Units'], "buy_price": row['Cost']} for _, row in edited.iterrows() if pd.notnull(row['Stock'])}
+        if st.button("Save Changes"):
+            new_port = {row['Stock']: {"shares": row['Units'], "buy_price": row['Cost']} 
+                        for _, row in edited.iterrows() if pd.notnull(row['Stock'])}
             save_data(DB_FILE, new_port)
             st.rerun()
+    else: st.warning("No stocks registered yet.")
 
 # --- PAGE: AI ANALYSIS ---
 elif page == "AI Market Analysis":
@@ -107,7 +119,7 @@ elif page == "AI Market Analysis":
     if not portfolio: st.warning("Add stocks to begin.")
     elif st.button("Analyze My Holdings"):
         results = []
-        with st.spinner("Processing AI Brain..."):
+        with st.spinner("Crunching numbers..."):
             for s, info in portfolio.items():
                 price_data = yf.Ticker(s).history(period="1d")
                 if price_data.empty: continue
@@ -115,39 +127,53 @@ elif page == "AI Market Analysis":
                 price = float(price_data['Close'].iloc[-1])
                 gain_pct = ((price - info['buy_price']) / info['buy_price']) * 100
                 _, pred_pct = get_ai_prediction_data(s)
-                results.append({"Stock": s, "Price": f"{cur}{price:,.2f}", "Gain": f"{gain_pct:+.2f}%", "AI Predict": f"{pred_pct:+.2%}"})
-        st.table(pd.DataFrame(results))
+                results.append({
+                    "Stock": s, 
+                    "Price": f"{cur}{price:,.2f}", 
+                    "Your Gain": f"{gain_pct:+.2f}%", 
+                    "AI Prediction": f"{pred_pct:+.2%}"
+                })
+        st.table(pd.DataFrame(results)) # Fix for DeltaGenerator error (cite: 10.2)
 
 # --- PAGE: NEW OPPORTUNITIES ---
 elif page == "New Opportunities":
     st.header("Investment Tiers")
-    st.write("AI scans global markets for specific growth profiles.")
+    st.write("AI scans for stocks with **positive** growth predictions only.")
     
     scan_list = ["NVDA", "AAPL", "TSLA", "TCS.NS", "RELIANCE.NS", "BTC-USD", "COIN", "MSFT", "AMD", "GOOGL"]
     
-    if st.button("Scan for New Opportunities"):
+    if st.button("Scan Market Opportunities"):
         risky, slow = [], []
-        with st.spinner("Filtering opportunities..."):
-            for s in scan_list:
-                pred, pred_pct = get_ai_prediction_data(s)
-                # Only recommend if prediction is POSITIVE
-                if pred == "UP" and pred_pct > 0:
-                    cur = get_currency_sign(s)
-                    price = yf.Ticker(s).history(period="1d")['Close'].iloc[-1]
-                    row = {"Stock": s, "Price": f"{cur}{price:,.2f}", "Est. Growth": f"{pred_pct:+.2%}"}
-                    
-                    if pred_pct > 0.05: # Over 5% predicted growth is "High Risk"
-                        risky.append(row)
-                    else:
-                        slow.append(row)
-
-        st.subheader("🔥 High Risk / High Reward")
-        st.write("Volatile stocks with potential for massive short-term gains.")
-        st.table(pd.DataFrame(risky)) if risky else st.write("No high-risk breakouts detected.")
-
-        st.subheader("🛡️ Slow & Steady Growth")
-        st.write("Lower volatility stocks for consistent, reliable wealth building.")
-        st.table(pd.DataFrame(slow)) if slow else st.write("No steady growth signals detected.")
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        for i, s in enumerate(scan_list):
+            status_text.text(f"Scanning {s}... (Rate limit protection active)")
+            pred, pred_pct = get_ai_prediction_data(s)
+            
+            # FIX: Only recommend if growth is POSITIVE (cite: 10.3)
+            if pred == "UP" and pred_pct > 0:
+                cur = get_currency_sign(s)
+                price = yf.Ticker(s).history(period="1d")['Close'].iloc[-1]
+                row = {"Stock": s, "Price": f"{cur}{price:,.2f}", "Est. Growth": f"{pred_pct:+.2%}"}
+                
+                # Risky = Over 5% predicted | Slow = Under 5%
+                if pred_pct > 0.05: risky.append(row)
+                else: slow.append(row)
+            
+            progress_bar.progress((i + 1) / len(scan_list))
+        
+        status_text.text("Scan Complete!")
+        
+        col_a, col_b = st.columns(2)
+        with col_a:
+            st.subheader("🚀 High Risk / High Reward")
+            if risky: st.table(pd.DataFrame(risky))
+            else: st.write("No high-risk breakouts found.")
+        with col_b:
+            st.subheader("🐢 Slow & Steady Growth")
+            if slow: st.table(pd.DataFrame(slow))
+            else: st.write("No steady growth stocks found.")
 
 # --- PAGE: LOGS ---
 elif page == "Activity Logs":
