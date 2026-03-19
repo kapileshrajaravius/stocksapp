@@ -4,137 +4,137 @@ import yfinance as yf
 import json
 import os
 import time
-from datetime import datetime
-from sklearn.ensemble import RandomForestClassifier
 
 # --- INITIALIZATION ---
 st.set_page_config(page_title="Global Market Intelligence", layout="wide")
 
 DB_FILE = 'portfolio.json'
-LOG_FILE = 'task_log.json'
 
-# --- DATA HELPERS ---
-def load_data(file):
-    if os.path.exists(file):
+def load_data():
+    if os.path.exists(DB_FILE):
         try:
-            with open(file, 'r') as f: return json.load(f)
+            with open(DB_FILE, 'r') as f: return json.load(f)
         except: return {}
     return {}
 
-def save_data(file, data):
-    with open(file, 'w') as f: json.dump(data, f, indent=4)
+def save_data(data):
+    with open(DB_FILE, 'w') as f: json.dump(data, f, indent=4)
 
-def get_ai_prediction_data(ticker):
-    """Calculates predictions with simple reasons and rate-limit protection"""
+def get_stock_data(ticker):
+    """Fetches price and trend info with rate-limit safety."""
     try:
-        time.sleep(1.5) 
+        time.sleep(2.0) # Increased delay to stop Rate Limit errors
         data = yf.download(ticker, period="1y", interval="1d", progress=False)
-        if data.empty or len(data) < 50:
-            return "NEUTRAL", 0.0, None, "Not enough data yet"
+        if data.empty: return None
         
-        price = float(data['Close'].iloc[-1])
+        curr_price = float(data['Close'].iloc[-1])
         avg_10 = data['Close'].rolling(10).mean().iloc[-1]
         avg_50 = data['Close'].rolling(50).mean().iloc[-1]
         
-        # Simplified Reason Logic
+        # Simple Logic for "The Why"
         reasons = []
-        if price > avg_10: reasons.append("Price is on a short-term hot streak")
+        if curr_price > avg_10: reasons.append("Price is on a hot streak")
         else: reasons.append("Price is cooling down lately")
         
-        if avg_10 > avg_50: reasons.append("The overall trend is pointing up")
-        else: reasons.append("The general trend is slowing down")
+        if avg_10 > avg_50: reasons.append("Overall trend is pointing up")
+        else: reasons.append("General trend is slowing down")
         
-        # AI Training
-        data['Target'] = (data['Close'].shift(-1) > data['Close']).astype(int)
-        data = data.dropna()
-        model = RandomForestClassifier(n_estimators=50).fit(data[['Close']][:-1], data['Target'][:-1])
-        pred = model.predict(data[['Close']].tail(1))[0]
-        
-        recent_growth = (price / data['Close'].iloc[-10]) - 1
-        predicted_pct = recent_growth if pred == 1 else -abs(recent_growth)
-        
-        return ("UP" if pred == 1 else "DOWN"), float(predicted_pct), price, " & ".join(reasons)
+        # Prediction logic
+        growth = (curr_price / data['Close'].iloc[-10]) - 1
+        return {"price": curr_price, "growth": growth, "reason": " & ".join(reasons)}
     except:
-        return "ERROR", 0.0, None, "Connection issue"
+        return None
 
 # --- SIDEBAR ---
 st.sidebar.title("Menu")
-page = st.sidebar.radio("Go to:", ["Registration", "My Portfolio", "AI Analysis Report", "Global Opportunities"])
+page = st.sidebar.radio("Go to:", ["Registration", "My Portfolio", "AI Analysis", "Global Opportunities"])
 st.sidebar.divider()
-st.sidebar.subheader("System Tips")
-st.sidebar.text("1. Works for all International stocks.")
-st.sidebar.text("2. AI looks at 10-day & 50-day trends.")
-st.sidebar.text("3. Table starts at 1 for easy reading.")
+st.sidebar.subheader("Quick Tips")
+st.sidebar.text("1. International stocks work best.")
+st.sidebar.text("2. Tables start at 1 for clarity.")
+
+# --- PAGE: PORTFOLIO & TOTAL VALUE ---
+if page == "My Portfolio":
+    st.header("Current Holdings")
+    portfolio = load_data()
+    
+    if portfolio:
+        # Calculate Total Value Header
+        total_value = 0
+        display_list = []
+        
+        with st.spinner("Calculating total value..."):
+            for s, info in portfolio.items():
+                data = get_stock_data(s)
+                if data:
+                    current_val = data['price'] * info['shares']
+                    total_value += current_val
+                    display_list.append({
+                        "Stock": s,
+                        "Units": info['shares'],
+                        "Current Price": f"${data['price']:,.2f}",
+                        "Current Value": f"${current_val:,.2f}"
+                    })
+
+        # TOTAL VALUE DISPLAY
+        st.metric(label="Total Portfolio Value (USD)", value=f"${total_value:,.2f}")
+        
+        df = pd.DataFrame(display_list)
+        df.index += 1
+        st.table(df)
+    else:
+        st.info("No stocks registered yet.")
 
 # --- PAGE: REGISTRATION ---
-if page == "Registration":
-    st.header("Register New Stocks")
+elif page == "Registration":
+    st.header("Add International Stocks")
     col1, col2, col3 = st.columns(3)
-    with col1: t_in = st.text_input("Stock Ticker (e.g., TSLA, NVDA)").upper()
-    with col2: s_in = st.number_input("Units Owned", min_value=0.0)
-    with col3: p_in = st.number_input("Purchase Price", min_value=0.0)
+    with col1: t_in = st.text_input("Ticker (e.g. TSLA, NVDA)").upper()
+    with col2: s_in = st.number_input("Shares", min_value=0.0)
+    with col3: p_in = st.number_input("Buy Price", min_value=0.0)
     
-    if st.button("Add to Portfolio"):
+    if st.button("Register Stock"):
         if t_in:
-            with st.spinner("Checking ticker..."):
-                _, _, price, _ = get_ai_prediction_data(t_in)
-                if price:
-                    port = load_data(DB_FILE)
-                    port[t_in] = {"shares": s_in, "buy_price": p_in}
-                    save_data(DB_FILE, port)
-                    st.success(f"Added {t_in} to your list.")
-                else: st.error("Could not find that stock.")
+            port = load_data()
+            port[t_in] = {"shares": s_in, "buy_price": p_in}
+            save_data(port)
+            st.success(f"Successfully registered {t_in}")
 
-# --- PAGE: MY PORTFOLIO ---
-elif page == "My Portfolio":
-    st.header("Current Holdings")
-    portfolio = load_data(DB_FILE)
-    if portfolio:
-        df_p = pd.DataFrame.from_dict(portfolio, orient='index').reset_index()
-        df_p.columns = ["Ticker", "Units", "Cost"]
-        df_p.index += 1
-        st.table(df_p)
-    else: st.info("Your portfolio is empty.")
-
-# --- PAGE: AI ANALYSIS REPORT ---
-elif page == "AI Analysis Report":
-    st.header("AI Analysis: What to do now")
-    portfolio = load_data(DB_FILE)
-    if not portfolio: st.warning("Add stocks first.")
-    elif st.button("Generate Report"):
+# --- PAGE: AI ANALYSIS ---
+elif page == "AI Analysis":
+    st.header("AI Report: Simplified Why")
+    portfolio = load_data()
+    if st.button("Analyze My Portfolio"):
         results = []
         for s, info in portfolio.items():
-            _, pct, price, why = get_ai_prediction_data(s)
-            if price:
-                action = "BUY MORE" if pct > 0.01 else "SELL" if pct < -0.02 else "HOLD"
-                money_change = (price * info['shares']) * pct
+            data = get_stock_data(s)
+            if data:
+                action = "BUY MORE" if data['growth'] > 0 else "SELL" if data['growth'] < -0.02 else "HOLD"
                 results.append({
-                    "Stock": s, 
-                    "Action": action, 
-                    "Predicted Gain": f"${money_change:,.2f}",
-                    "AI Prediction": f"{pct:+.2%}", 
-                    "Reason": why
+                    "Stock": s,
+                    "Action": action,
+                    "Prediction": f"{data['growth']:+.2%}",
+                    "Simplified Reason": data['reason']
                 })
-        df_res = pd.DataFrame(results)
-        df_res.index += 1
-        st.table(df_res)
+        df = pd.DataFrame(results)
+        df.index += 1
+        st.table(df)
 
 # --- PAGE: GLOBAL OPPORTUNITIES ---
 elif page == "Global Opportunities":
-    st.header("Global Market Opportunities")
-    scan_list = ["TSLA", "AAPL", "NVDA", "MSFT", "GOOGL", "AMZN", "META", "NFLX", "AMD"]
+    st.header("Global Market Picks")
+    scan_list = ["TSLA", "AAPL", "NVDA", "MSFT", "GOOGL", "AMZN"]
     
-    if st.button("Scan International Markets"):
+    if st.button("Scan Markets"):
         buys, sells = [], []
         for s in scan_list:
-            _, pct, price, why = get_ai_prediction_data(s)
-            if price:
-                row = {"Stock": s, "Current Price": f"${price:,.2f}", "Reason": why}
-                if pct > 0: 
-                    row["When to Sell"] = "Sell if price drops below the 10-day average."
+            data = get_stock_data(s)
+            if data:
+                row = {"Stock": s, "Price": f"${data['price']:,.2f}", "Why": data['reason']}
+                if data['growth'] > 0:
+                    row["When to Sell"] = "Sell if the hot streak ends"
                     buys.append(row)
-                else: 
-                    row["Status"] = "Already losing momentum"
+                else:
                     sells.append(row)
         
         st.subheader("Strong Picks to Buy")
@@ -143,7 +143,7 @@ elif page == "Global Opportunities":
             df_b.index += 1
             st.table(df_b)
             
-        st.subheader("Exit Signals (When to Sell)")
+        st.subheader("Exit Signals (Time to Sell)")
         if sells:
             df_s = pd.DataFrame(sells)
             df_s.index += 1
