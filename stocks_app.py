@@ -14,7 +14,7 @@ st.set_page_config(page_title="Global Market Intelligence", layout="wide")
 
 DB_FILE = 'portfolio.json'
 
-# --- HELPERS ---
+# --- DATA HELPERS ---
 def load_data():
     if os.path.exists(DB_FILE):
         try:
@@ -32,47 +32,48 @@ def get_currency_sign(ticker):
     return "$"
 
 def get_google_finance_price(ticker):
-    """Fallback: Scrapes current price from Google Finance."""
+    """Fallback: Scrapes current price from Google Finance if Yahoo is blocked."""
     try:
-        # Format for Google Finance (e.g., NSE:TCS or NASDAQ:TSLA)
+        # Standardize ticker for Google (e.g., AAPL -> NASDAQ:AAPL)
         search_ticker = ticker.replace('.NS', ':NSE').replace('.BO', ':BOM')
         url = f"https://www.google.com/finance/quote/{search_ticker}"
-        response = requests.get(url, timeout=5)
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        response = requests.get(url, headers=headers, timeout=5)
         soup = BeautifulSoup(response.text, 'html.parser')
-        # Find the price class (this changes occasionally, but is the current standard)
-        price_class = soup.find(class_="YMlS7e") 
-        if price_class:
-            return float(price_class.text.replace(',', '').replace('$', '').replace('₹', '').strip())
+        # Standard Google Finance price class
+        price_element = soup.find(class_="YMlS7e")
+        if price_element:
+            return float(price_element.text.replace(',', '').replace('$', '').replace('₹', '').strip())
         return None
     except:
         return None
 
 def get_ai_prediction_data(ticker):
-    """Primary: Yahoo Finance. Fallback: Google Finance Price."""
+    """Fetches data from Yahoo with a Google fallback for prices."""
     try:
-        time.sleep(1.5) # Basic politeness delay
+        # 2-second delay to prevent Yahoo IP blocking
+        time.sleep(2.0) 
         data = yf.download(ticker, period="1y", interval="1d", progress=False)
         
         if data.empty or len(data) < 50:
-            # TRY GOOGLE FALLBACK FOR PRICE ONLY
             price = get_google_finance_price(ticker)
             if price:
                 return "NEUTRAL", 0.0, price, "Using Google Finance (Trends unavailable)"
-            return "ERROR", 0.0, None, "No data found on Yahoo or Google"
+            return "ERROR", 0.0, None, "No data found"
         
-        # Technical Logic
         curr_price = float(data['Close'].iloc[-1])
         avg_10 = data['Close'].rolling(10).mean().iloc[-1]
         avg_50 = data['Close'].rolling(50).mean().iloc[-1]
         
+        # Simplified Reasons
         reasons = []
-        if curr_price > avg_10: reasons.append("Price is on a hot streak")
+        if curr_price > avg_10: reasons.append("Price is on a short-term hot streak")
         else: reasons.append("Price is cooling down lately")
         
-        if avg_10 > avg_50: reasons.append("Overall trend is pointing up")
-        else: reasons.append("General trend is slowing down")
+        if avg_10 > avg_50: reasons.append("The overall trend is pointing up")
+        else: reasons.append("The general trend is slowing down")
         
-        # Simple AI Check
+        # AI Logic
         data['Target'] = (data['Close'].shift(-1) > data['Close']).astype(int)
         data = data.dropna()
         model = RandomForestClassifier(n_estimators=50).fit(data[['Close']][:-1], data['Target'][:-1])
@@ -82,94 +83,117 @@ def get_ai_prediction_data(ticker):
         predicted_pct = recent_growth if pred == 1 else -abs(recent_growth)
         
         return ("UP" if pred == 1 else "DOWN"), float(predicted_pct), curr_price, " & ".join(reasons)
-    except Exception as e:
-        # FINAL ATTEMPT AT GOOGLE PRICE
+    except:
         price = get_google_finance_price(ticker)
         if price:
             return "NEUTRAL", 0.0, price, "Yahoo Rate Limit hit. Showing Google Price."
-        return "ERROR", 0.0, None, f"Connection Issue: {str(e)}"
+        return "ERROR", 0.0, None, "Connection issue"
 
-# --- SIDEBAR ---
+# --- SIDEBAR MENU ---
 st.sidebar.title("Navigation")
 page = st.sidebar.radio("Go to:", ["Registration", "My Portfolio", "AI Analysis Report", "Global Opportunities"])
 st.sidebar.divider()
 st.sidebar.subheader("System Tips")
-st.sidebar.text("1. Uses Google fallback if Yahoo fails.")
-st.sidebar.text("2. 1.5s delay added between stocks.")
+st.sidebar.text("1. Works for all International stocks.")
+st.sidebar.text("2. Tables start at 1 for clarity.")
+st.sidebar.text("3. Using Google Fallback system.")
 
-# --- PAGES ---
+# --- PAGE: REGISTRATION ---
 if page == "Registration":
     st.header("Register New Stocks")
     col1, col2, col3 = st.columns(3)
-    with col1: t_in = st.text_input("Ticker (e.g. AAPL, TCS.NS)").upper()
-    with col2: s_in = st.number_input("Units", min_value=0.0)
+    with col1: t_in = st.text_input("Stock Ticker (e.g. TSLA, NVDA)").upper()
+    with col2: s_in = st.number_input("Units Owned", min_value=0.0)
     with col3: p_in = st.number_input("Purchase Price", min_value=0.0)
     
-    if st.button("Add Stock"):
+    if st.button("Add to Portfolio"):
         if t_in:
-            with st.spinner("Checking market data..."):
+            with st.spinner("Finding stock..."):
                 _, _, price, _ = get_ai_prediction_data(t_in)
                 if price:
                     port = load_data()
                     port[t_in] = {"shares": s_in, "buy_price": p_in}
                     save_data(port)
-                    st.success(f"Added {t_in} at current price {get_currency_sign(t_in)}{price:,.2f}")
-                else: st.error("Could not find ticker on Yahoo or Google Finance.")
+                    st.success(f"Added {t_in} successfully.")
+                else:
+                    st.error("Stock not found. Try a different ticker.")
 
+# --- PAGE: MY PORTFOLIO ---
 elif page == "My Portfolio":
-    st.header("Current Portfolio Status")
+    st.header("Portfolio Overview")
     portfolio = load_data()
     if portfolio:
         total_val = 0
         display_list = []
-        for s, info in portfolio.items():
-            _, _, price, _ = get_ai_prediction_data(s)
-            if price:
-                cur = get_currency_sign(s)
-                val = price * info['shares']
-                total_val += val
-                display_list.append({"Stock": s, "Units": info['shares'], "Price": f"{cur}{price:,.2f}", "Value": f"{cur}{val:,.2f}"})
+        with st.spinner("Updating live prices..."):
+            for s, info in portfolio.items():
+                _, _, price, _ = get_ai_prediction_data(s)
+                if price:
+                    val = price * info['shares']
+                    total_val += val
+                    display_list.append({
+                        "Stock": s, 
+                        "Units": info['shares'], 
+                        "Live Price": f"{get_currency_sign(s)}{price:,.2f}", 
+                        "Value": f"{get_currency_sign(s)}{val:,.2f}"
+                    })
         
-        st.metric("Total Portfolio Value", f"${total_val:,.2f} (USD Equivalent)")
+        # TOTAL VALUE DISPLAY
+        st.metric("Total Portfolio Value", f"${total_val:,.2f} (USD Est.)")
+        
         df = pd.DataFrame(display_list)
         df.index += 1
         st.table(df)
-    else: st.info("No holdings found.")
+    else:
+        st.info("No stocks registered.")
 
+# --- PAGE: AI ANALYSIS REPORT ---
 elif page == "AI Analysis Report":
-    st.header("Investment Intelligence")
+    st.header("AI Recommendations")
     portfolio = load_data()
-    if st.button("Run Portfolio Analysis"):
+    if st.button("Run Detailed Analysis"):
         results = []
         for s, info in portfolio.items():
             _, pct, price, why = get_ai_prediction_data(s)
             if price:
                 action = "BUY MORE" if pct > 0.01 else "SELL" if pct < -0.01 else "HOLD"
-                results.append({"Stock": s, "Action": action, "Prediction": f"{pct:+.2%}", "Reason": why})
-        df = pd.DataFrame(results)
-        df.index += 1
-        st.table(df)
+                money_gain = (price * info['shares']) * pct
+                results.append({
+                    "Stock": s, 
+                    "Action": action, 
+                    "Predicted Gain": f"${money_change:,.2f}",
+                    "AI Prediction": f"{pct:+.2%}", 
+                    "Reason": why
+                })
+        df_res = pd.DataFrame(results)
+        df_res.index += 1
+        st.table(df_res)
 
+# --- PAGE: GLOBAL OPPORTUNITIES ---
 elif page == "Global Opportunities":
-    st.header("Market Scanner")
-    scan_list = ["TSLA", "AAPL", "NVDA", "RELIANCE.NS", "TCS.NS", "MSFT", "GOOGL"]
-    if st.button("Scan Top Opportunities"):
+    st.header("Global Market Scanner")
+    scan_list = ["TSLA", "AAPL", "NVDA", "MSFT", "GOOGL", "AMZN", "META", "NFLX"]
+    
+    if st.button("Scan International Markets"):
         buys, sells = [], []
         for s in scan_list:
             _, pct, price, why = get_ai_prediction_data(s)
             if price:
-                cur = get_currency_sign(s)
-                row = {"Stock": s, "Price": f"{cur}{price:,.2f}", "Reason": why}
-                if pct > 0: buys.append(row)
-                else: sells.append(row)
+                row = {"Stock": s, "Price": f"${price:,.2f}", "Reason": why}
+                if pct > 0:
+                    row["When to Sell"] = "Sell if price drops below 10-day average"
+                    buys.append(row)
+                else:
+                    sells.append(row)
         
-        st.subheader("Strong Picks")
-        if buys: 
+        st.subheader("Strong Picks (Buy)")
+        if buys:
             df_b = pd.DataFrame(buys)
             df_b.index += 1
             st.table(df_b)
-        st.subheader("Exit Signals")
-        if sells: 
+            
+        st.subheader("Exit Signals (Sell)")
+        if sells:
             df_s = pd.DataFrame(sells)
             df_s.index += 1
             st.table(df_s)
