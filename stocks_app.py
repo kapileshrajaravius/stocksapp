@@ -15,7 +15,7 @@ st.set_page_config(page_title="Market Intelligence Portal", layout="wide")
 DB_FILE = 'portfolio.json'
 LOG_FILE = 'task_log.json'
 
-# --- DATA HELPERS ---
+# --- HELPERS ---
 def load_data(file):
     if os.path.exists(file):
         try:
@@ -27,186 +27,102 @@ def save_data(file, data):
     with open(file, 'w') as f: json.dump(data, f, indent=4)
 
 def get_currency_sign(ticker):
-    if ticker.endswith('.NS') or ticker.endswith('.BO'):
-        return "INR "
-    return "$"
-
-def get_google_finance_price(ticker):
-    """Backup: Scrapes Google Finance if Yahoo is rate-limited"""
-    try:
-        url = f"https://www.google.com/search?q=google+finance+{ticker}"
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        response = requests.get(url, headers=headers)
-        soup = BeautifulSoup(response.text, 'html.parser')
-        price_text = soup.find('div', {'class': 'BNeawe iBp4i AP7Wnd'}).text
-        return float(price_text.split()[0].replace(',', ''))
-    except:
-        return None
+    return "INR " if ticker.endswith('.NS') or ticker.endswith('.BO') else "$"
 
 def get_ai_prediction_data(ticker):
-    """Calculates predictions with Rate Limit Protection and Backup Logic"""
-    for attempt in range(2):
-        try:
-            time.sleep(1.5) 
-            data = yf.download(ticker, period="1y", interval="1d", progress=False)
-            
-            if data.empty or len(data) < 40:
-                return "NEUTRAL", 0.0, None
-            
-            data['MA10'] = data['Close'].rolling(10).mean()
-            data['MA50'] = data['Close'].rolling(50).mean()
-            data['Target'] = (data['Close'].shift(-1) > data['Close']).astype(int)
-            data = data.dropna()
-            
-            X = data[['MA10', 'MA50']]
-            y = data['Target']
-            
-            model = RandomForestClassifier(n_estimators=50).fit(X[:-1], y[:-1])
-            pred = model.predict(X.tail(1))[0]
-            
-            recent_growth = (data['Close'].iloc[-1] / data['Close'].iloc[-10]) - 1
-            predicted_pct = recent_growth if pred == 1 else -abs(recent_growth)
-            
-            return ("UP" if pred == 1 else "DOWN"), float(predicted_pct), float(data['Close'].iloc[-1])
-            
-        except Exception as e:
-            if "Rate" in str(e):
-                price = get_google_finance_price(ticker)
-                if price:
-                    return "NEUTRAL", 0.0, price
-                time.sleep(3)
-                continue
-            return "ERROR", 0.0, None
-    return "ERROR", 0.0, None
+    """Calculates predictions and provides the 'Why' behind the signal"""
+    try:
+        time.sleep(1.5) 
+        data = yf.download(ticker, period="1y", interval="1d", progress=False)
+        if data.empty or len(data) < 50: return "NEUTRAL", 0.0, None, "Insufficient Data"
+        
+        # Technical Inputs (Features)
+        data['MA10'] = data['Close'].rolling(10).mean()
+        data['MA50'] = data['Close'].rolling(50).mean()
+        curr_price = float(data['Close'].iloc[-1])
+        ma10 = float(data['MA10'].iloc[-1])
+        ma50 = float(data['MA50'].iloc[-1])
+        
+        # Reason Logic
+        reasons = []
+        if curr_price > ma10: reasons.append("Price above 10-day average (Short-term strength)")
+        else: reasons.append("Price below 10-day average (Short-term weakness)")
+        
+        if ma10 > ma50: reasons.append("Fast average above slow average (Bullish trend)")
+        else: reasons.append("Fast average below slow average (Bearish trend)")
+        
+        # AI Training
+        data['Target'] = (data['Close'].shift(-1) > data['Close']).astype(int)
+        data = data.dropna()
+        model = RandomForestClassifier(n_estimators=50).fit(data[['MA10', 'MA50']][:-1], data['Target'][:-1])
+        pred = model.predict(data[['MA10', 'MA50']].tail(1))[0]
+        
+        recent_growth = (curr_price / data['Close'].iloc[-10]) - 1
+        predicted_pct = recent_growth if pred == 1 else -abs(recent_growth)
+        
+        return ("UP" if pred == 1 else "DOWN"), float(predicted_pct), curr_price, " & ".join(reasons)
+    except:
+        return "ERROR", 0.0, None, "Connection Issue"
 
-# --- SIDEBAR NAVIGATION ---
+# --- SIDEBAR ---
 st.sidebar.title("Navigation")
-page = st.sidebar.radio("Go to:", [
-    "Stock Registration", 
-    "My Portfolio", 
-    "AI Market Analysis", 
-    "New Opportunities", 
-    "Activity Logs"
-])
-
+page = st.sidebar.radio("Go to:", ["Stock Registration", "My Portfolio", "AI Market Analysis", "New Opportunities"])
 st.sidebar.divider()
 st.sidebar.subheader("System Tips")
 st.sidebar.text("1. Use .NS for India stocks.")
-st.sidebar.text("2. Ensure ticker is correct.")
-st.sidebar.text("3. AI filters for positive growth.")
-st.sidebar.text("4. Backup data active.")
-
-# --- PAGE: REGISTRATION ---
-if page == "Stock Registration":
-    st.header("Stock Registration")
-    col1, col2, col3 = st.columns(3)
-    with col1: t_in = st.text_input("Ticker Symbol").upper()
-    with col2: s_in = st.number_input("Units Owned", min_value=0.0)
-    with col3: p_in = st.number_input("Purchase Price", min_value=0.0)
-    
-    if st.button("Register Stock"):
-        if t_in:
-            with st.spinner("Verifying..."):
-                _, _, price = get_ai_prediction_data(t_in)
-                if price is None:
-                    st.error("Ticker not found or service unavailable.")
-                else:
-                    port = load_data(DB_FILE)
-                    port[t_in] = {"shares": s_in, "buy_price": p_in}
-                    save_data(DB_FILE, port)
-                    st.success(f"Registered {t_in}")
+st.sidebar.text("2. AI scans 10-day & 50-day trends.")
 
 # --- PAGE: MY PORTFOLIO ---
-elif page == "My Portfolio":
+if page == "My Portfolio":
     st.header("My Portfolio")
     portfolio = load_data(DB_FILE)
     if portfolio:
         df_p = pd.DataFrame.from_dict(portfolio, orient='index').reset_index()
         df_p.columns = ["Stock", "Units", "Cost"]
-        df_p.index = df_p.index + 1 # Fix: Table starts at 1
-        edited = st.data_editor(df_p, num_rows="dynamic", use_container_width=True)
-        if st.button("Save Changes"):
-            new_port = {row['Stock']: {"shares": row['Units'], "buy_price": row['Cost']} 
-                        for _, row in edited.iterrows() if pd.notnull(row['Stock'])}
-            save_data(DB_FILE, new_port)
-            st.rerun()
+        df_p.index += 1
+        st.data_editor(df_p, use_container_width=True)
     else: st.info("No stocks registered.")
 
 # --- PAGE: AI ANALYSIS ---
 elif page == "AI Market Analysis":
-    st.header("AI Analysis Report")
+    st.header("AI Analysis & Reasons")
     portfolio = load_data(DB_FILE)
-    if not portfolio: st.warning("Register stocks first.")
-    elif st.button("Run AI Analysis"):
+    if st.button("Analyze Holdings"):
         results = []
-        progress = st.progress(0)
-        for i, (s, info) in enumerate(portfolio.items()):
-            cur_sign = get_currency_sign(s)
-            _, pred_pct, price = get_ai_prediction_data(s)
+        for s, info in portfolio.items():
+            _, pct, price, why = get_ai_prediction_data(s)
             if price:
-                gain_pct = ((price - info['buy_price']) / info['buy_price']) * 100
-                
-                # Recommendation Logic
-                if pred_pct > 0.01:
-                    action = "BUY MORE"
-                elif pred_pct < -0.02:
-                    action = "SELL"
-                else:
-                    action = "HOLD"
-                
-                results.append({
-                    "Stock": s, "Current Price": f"{cur_sign}{price:,.2f}", 
-                    "Total Gain": f"{gain_pct:+.2f}%", "AI Prediction": f"{pred_pct:+.2%}",
-                    "Action": action
-                })
-            progress.progress((i+1)/len(portfolio))
-        
-        final_df = pd.DataFrame(results)
-        final_df.index = final_df.index + 1 # Fix: Table starts at 1
-        st.table(final_df)
+                action = "BUY MORE" if pct > 0.01 else "SELL" if pct < -0.02 else "HOLD"
+                results.append({"Stock": s, "Action": action, "Prediction": f"{pct:+.2%}", "Reason": why})
+        df_res = pd.DataFrame(results)
+        df_res.index += 1
+        st.table(df_res)
 
 # --- PAGE: NEW OPPORTUNITIES ---
 elif page == "New Opportunities":
-    st.header("Market Recommendations")
-    scan_list = [
-        "NVDA", "AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "META", "BRK-B", "V", "JPM",
-        "WMT", "MA", "PG", "UNH", "HD", "TCS.NS", "RELIANCE.NS", "INFY.NS", "HDFCBANK.NS",
-        "ICICIBANK.NS", "BHARTIARTL.NS", "SBIN.NS", "ITC.NS", "LICI.NS", "ASIANPAINT.NS"
-    ]
+    st.header("Opportunities & Exit Signals")
+    scan_list = ["NVDA", "AAPL", "TSLA", "TCS.NS", "RELIANCE.NS", "MSFT", "GOOGL"]
     
-    if st.button("Scan Big Stocks"):
-        risky, slow = [], []
-        progress = st.progress(0)
-        for i, s in enumerate(scan_list):
-            pred, pred_pct, price = get_ai_prediction_data(s)
-            if pred == "UP" and pred_pct > 0 and price:
-                cur_sign = get_currency_sign(s)
-                row = {"Stock": s, "Price": f"{cur_sign}{price:,.2f}", "Predicted Growth": f"{pred_pct:+.2%}"}
-                if pred_pct > 0.05: risky.append(row)
-                else: slow.append(row)
-            progress.progress((i+1)/len(scan_list))
+    if st.button("Scan Market"):
+        buys, sells = [], []
+        for s in scan_list:
+            pred, pct, price, why = get_ai_prediction_data(s)
+            cur = get_currency_sign(s)
+            if price:
+                row = {"Stock": s, "Price": f"{cur}{price:,.2f}", "Reason": why}
+                # BUY: Growth > 0 and Bullish Trend
+                if pct > 0: buys.append(row)
+                # SELL: Growth < 0 or Bearish Trend
+                elif pct < -0.01: sells.append(row)
         
-        st.subheader("High Risk / High Reward")
-        if risky:
-            df_r = pd.DataFrame(risky)
-            df_r.index = df_r.index + 1
-            st.table(df_r)
-        else: st.text("No high risk opportunities found.")
-        
-        st.subheader("Slow and Steady Growth")
-        if slow:
-            df_s = pd.DataFrame(slow)
-            df_s.index = df_s.index + 1
+        st.subheader("Stocks to Buy/Watch")
+        if buys: 
+            df_b = pd.DataFrame(buys)
+            df_b.index += 1
+            st.table(df_b)
+            
+        st.subheader("Exit Signals (Time to Sell)")
+        if sells: 
+            df_s = pd.DataFrame(sells)
+            df_s.index += 1
             st.table(df_s)
-        else: st.text("No slow growth opportunities found.")
-
-# --- PAGE: LOGS ---
-elif page == "Activity Logs":
-    st.header("Action History")
-    logs = load_data(LOG_FILE)
-    if logs:
-        for ts, msg in reversed(list(logs.items())):
-            st.text(f"{ts}: {msg}")
-    if st.button("Clear Logs"):
-        save_data(LOG_FILE, {})
-        st.rerun()
